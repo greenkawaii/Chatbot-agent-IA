@@ -77,7 +77,7 @@ Remove-Item Env:LLM_MODEL ==> "no error"
 **Experience**
 en anglais :
 - token : [29, 84]
-- réponse : en anglais mais différent des rep fr (surement pas de lecture des fichier interne en fr)
+- réponse : en anglais mais différent des rep fr (surement pas de lecture des fichiers interne en fr)
 - temps : 4.92s
 
 Json : 
@@ -214,8 +214,6 @@ J'ai testé trois questions avec le modèle local, sans mode JSON forcé et sans
 
 ## Etape 6 - L'outil SQL sécurisé
 
-### Commentaires / remarques / observations
-
 L'essai avec la saisie `VIP' OR '1'='1` donne **500** avec la f-string : la valeur saisie change la condition SQL et la rend vraie pour tous les clients. Avec le paramètre `?`, le résultat est **0** : la saisie est traitée comme une valeur littérale et non comme du code SQL.
 
 L'outil SQL accepte les requêtes de lecture, ouvre la base en lecture seule et limite le nombre de lignes renvoyées. Pour le test demandé, le regroupement par segment a renvoyé :
@@ -260,3 +258,36 @@ La requête `DELETE FROM clients` a été refusée avant exécution. La requête
 6. **En production, sur une base PostgreSQL, quelle protection supplémentaire mettriez-vous en place côté serveur ?**
 
    Je créerais un compte PostgreSQL dédié à l'agent, avec uniquement le droit `SELECT` sur les tables nécessaires et aucun droit de modification ou d'administration. Les permissions côté serveur restent ainsi une barrière même si l'application a un défaut. Je limiterais également le temps d'exécution des requêtes.
+
+## Etape 7 - Decouper la documentation
+
+Les six documents Markdown sont découpés d'abord par leurs titres `##`, puis par taille si une section est longue. Chaque morceau reçoit le titre du document et celui de sa section pour rester identifiable lorsqu'il sera retrouvé seul. Les fichiers sont chargés en UTF-8 et dans l'ordre alphabétique.
+
+### Point de contrôle 7
+
+- `pytest tests/test_etape07_chunking.py -v` : **3 tests passés**.
+- Vérification complémentaire de l'étape 6 : les **18 tests SQL passent** également.
+- Avec un chevauchement de 100 caractères, j'obtiens **78 morceaux** pour `chunk_size=200`, **36** pour `chunk_size=500` et **35** pour `chunk_size=1000`.
+- Pour `chunk_size=200`, les morceaux sont plus courts et le contexte d'une idée peut être réparti sur plusieurs morceaux ; le préfixe du document et de la section aide à identifier le sujet.
+
+### Questions de réflexion
+
+1. **Testez `load_corpus` avec des tailles de 200, 500 et 1 000 caractères. Combien de morceaux obtenez-vous ? Lisez quelques morceaux de 200 caractères : restent-ils compréhensibles ?**
+
+   J'obtiens respectivement **78**, **36** et **35** morceaux (avec un chevauchement de 100 caractères). Les morceaux de 200 caractères sont plus ciblés, mais une explication longue peut être divisée en plusieurs morceaux. Le titre du document et de la section apporte du contexte ; le chevauchement aide à ne pas perdre complètement une idée coupée à la frontière.
+
+2. **Pourquoi le préfixe `[Titre — Section]` améliore-t-il la recherche ? Donnez un exemple tiré des documents.**
+
+   Le préfixe ajoute le contexte du passage à son contenu. Par exemple, une règle sur le délai de retour peut être identifiée comme appartenant à la section « Délai de rétractation » du document sur la politique des retours, même si le morceau ne répète pas le titre dans son texte.
+
+3. **Que se passerait-il sans chevauchement si une règle importante était coupée en deux ?**
+
+   La première partie pourrait se trouver à la fin d'un morceau et la suite au début du suivant. Une recherche ne retrouvant qu'un seul morceau donnerait une règle incomplète. Le chevauchement augmente les chances qu'un passage utile contienne le contexte nécessaire.
+
+4. **Pourquoi lire les fichiers avec `encoding="utf-8"` est-il indispensable sous Windows ?**
+
+   L'encodage par défaut peut dépendre de la configuration Windows et ne pas être UTF-8. Les accents français risqueraient alors d'être mal décodés ou de provoquer une erreur. Préciser UTF-8 garantit que les caractères des documents sont lus correctement.
+
+5. **Nos documents sont bien structurés en sections `##`. Comment découperiez-vous un PDF de 80 pages sans titres ?**
+
+   Je commencerais par extraire le texte et repérer des frontières sémantiques possibles, comme les pages, les paragraphes ou les changements de sujet. Ensuite, je créerais des morceaux de taille raisonnable avec un chevauchement, en conservant si possible le numéro de page et les titres détectés pour retrouver la source et garder le contexte.

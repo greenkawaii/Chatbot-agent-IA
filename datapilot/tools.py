@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -188,3 +189,110 @@ class SQLTool:
                 "WHERE type = 'table' AND sql IS NOT NULL ORDER BY name"
             ).fetchall()
         return "\n\n".join(row[0] for row in rows)
+
+
+@dataclass
+class Chunk:
+    text: str
+    source: str
+    section: str
+
+
+def chunk_text(
+    text: str,
+    chunk_size: int = 500,
+    overlap: int = 100,
+) -> list[str]:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size doit être strictement positif")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap doit être positif et strictement inférieur à chunk_size")
+
+    words = text.split()
+    chunks: list[str] = []
+    current: list[str] = []
+    current_length = 0
+    index = 0
+
+    while index < len(words):
+        word = words[index]
+        added_length = len(word) + (1 if current else 0)
+        if not current or current_length + added_length <= chunk_size:
+            current.append(word)
+            current_length += added_length
+            index += 1
+            continue
+
+        current_text = " ".join(current)
+        chunks.append(current_text)
+        if overlap:
+            overlap_text = current_text[-overlap:]
+            _, separator, remainder = overlap_text.partition(" ")
+            current = remainder.split() if separator else []
+        else:
+            current = []
+        current_length = len(" ".join(current))
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def chunk_markdown(
+    text: str,
+    source: str,
+    chunk_size: int = 500,
+    overlap: int = 100,
+) -> list[Chunk]:
+    title_match = re.search(r"^#\s+(.+)$", text, flags=re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else source
+    parts = re.split(r"^##\s+", text, flags=re.MULTILINE)
+    chunks: list[Chunk] = []
+
+    for index, part in enumerate(parts):
+        heading, separator, content = part.partition("\n")
+        if index == 0:
+            section = title
+            if title_match:
+                content = re.sub(r"^#\s+.+(?:\r?\n|$)", "", part, count=1).strip()
+            else:
+                content = part.strip()
+        else:
+            section = heading.strip()
+            content = content.strip() if separator else ""
+
+        if not content:
+            continue
+        for piece in chunk_text(content, chunk_size, overlap):
+            chunks.append(
+                Chunk(
+                    text=f"[{title} — {section}] {piece}",
+                    source=source,
+                    section=section,
+                )
+            )
+    return chunks
+
+
+def load_corpus(
+    docs_dir,
+    chunk_size: int = 500,
+    overlap: int = 100,
+) -> list[Chunk]:
+    directory = Path(docs_dir)
+    files = sorted(directory.glob("*.md")) if directory.is_dir() else []
+    if not files:
+        raise FileNotFoundError(f"Aucun fichier Markdown trouvé dans {directory}")
+
+    chunks: list[Chunk] = []
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        chunks.extend(
+            chunk_markdown(
+                text,
+                source=path.name,
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+        )
+    return chunks
