@@ -341,3 +341,36 @@ La phrase sur le délai de retour est donc la plus proche de la question. Pour �
 6. **FAISS ne stocke que des vecteurs. Citez une solution qui stocke aussi les textes et les métadonnées, et dites quand vous la préféreriez.**
 
    Chroma peut stocker les vecteurs avec les textes et des métadonnées. Je le préférerais pour un corpus persistant ou plus volumineux, quand je veux gérer plus simplement l'ajout, la mise à jour et la récupération des documents et de leurs métadonnées.
+
+## Etape 9 - Lire la décision du LLM et router
+
+`parse_llm_output` accepte un objet JSON seul ou entouré de texte et de balises Markdown. Il normalise l'action en minuscules, accepte `action_input` si `input` manque et conserve les paramètres éventuels. `route_query` transforme une décision finale en réponse, appelle l'outil correspondant ou renvoie une erreur lisible si le JSON est invalide ou si l'outil n'existe pas.
+
+### Point de contrôle 9
+
+- `pytest tests/test_etape09_routing.py -v` : **8 tests passés**.
+- Avec le vrai `SQLTool`, la requête `SELECT COUNT(*) AS n FROM produits` renvoie un `RouteResult` de type `tool` dont le résultat contient **30**.
+- Une action `envoyer_email` inconnue renvoie une erreur indiquant « Outil inconnu » et les outils valides.
+- Vérification complémentaire : les étapes 3, 4, 6, 7 et 8 passent également, soit **28 tests**.
+
+### Questions de réflexion
+
+1. **Pourquoi l’expression `\{.*\}` doit-elle être « gourmande » (`.*` et non `.*?`) ? Testez les deux avec un JSON qui contient un objet imbriqué.**
+
+   Avec un objet imbriqué comme `{"action":"final_answer","input":{"texte":"ok"}}`, l'expression gourmande va du premier `{` au dernier `}` et capture l'objet complet. L'expression non gourmande s'arrête au premier `}`, celui de l'objet intérieur, et ne capture qu'un fragment JSON incomplet. Si le texte contient plusieurs objets JSON séparés, une expression gourmande peut au contraire les capturer ensemble et échouer ; le parseur est donc conçu pour le cas attendu d'un seul objet dans la réponse.
+
+2. **Pourquoi renvoyer un `RouteResult` d’erreur plutôt que de lever une exception quand l’outil est inconnu ?**
+
+   Une erreur sous forme de résultat peut être ajoutée à la conversation comme observation. Le LLM peut alors corriger son action au prochain tour, sans interrompre toute la boucle ni faire planter l'application.
+
+3. **Que faut-il modifier, et où, pour ajouter un troisième outil à l’agent ?**
+
+   Il faut d'abord créer l'outil avec une méthode `run`, puis l'ajouter au dictionnaire `tools` passé au routeur (et, plus tard, à l'agent). Il faut également autoriser et documenter cette action dans le system prompt. Le routeur peut rester générique tant que l'outil respecte l'interface attendue.
+
+4. **Le dictionnaire `tools` accepte « n’importe quel objet qui a une méthode `run` ». Quel avantage pour les tests ?**
+
+   Les tests peuvent fournir un petit faux outil qui enregistre ses arguments et renvoie un résultat connu. Ils vérifient le routage sans devoir initialiser la vraie base de données, le modèle ou le service externe.
+
+5. **Ce mécanisme ressemble au tool calling natif proposé par les API de LLM. Qu’est-ce que le natif apporterait, et qu’est-ce que notre version « manuelle » vous a permis de comprendre ?**
+
+   Le tool calling natif fournit une structure d'appel d'outil directement dans la réponse de l'API, ce qui évite souvent de demander au modèle de fabriquer lui-même du JSON dans du texte. La version manuelle rend visibles les étapes essentielles : lire une décision, valider l'action, appeler uniquement un outil autorisé et renvoyer son résultat au modèle. Dans les deux cas, le code doit garder le contrôle et vérifier les appels avant leur exécution.
