@@ -1,0 +1,1 @@
+{"timestamp": "2026-11-09T13:35:35", "model": "qwen2.5:7b", "duration_s": 1.859647599980235, "prompt_tokens": 35, "completion_tokens": 2, "messages": [{"role": "user", "content": "Réponds juste OK."}], "answer": "OK"}
