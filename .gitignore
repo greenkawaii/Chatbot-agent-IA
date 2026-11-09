@@ -2,6 +2,9 @@
 .venv/
 venv/
 
+#Initial files
+datapilot_kit.zip
+
 # Python cache files
 __pycache__/
 *.py[cod]
