@@ -169,3 +169,45 @@ La classe `Conversation` conserve séparément le message système et l’histor
 4. **L’estimation « caractères / 4 » est grossière. Dans quel cas risque-t-elle de beaucoup se tromper ?**
 
    Le nombre de caractères ne correspond pas toujours au nombre de tokens. L’estimation peut être très différente pour des textes dans une langue moins bien représentée par le tokenizer, des mots rares, des suites de chiffres, du code ou des caractères spéciaux. Pour obtenir un compte exact, il faudrait utiliser le tokenizer du modèle concerné.
+
+## Etape 5 - Le system prompt, cerveau de l'agent
+
+Le prompt est dans `prompts.py` et son schéma est inséré par `build_system_prompt(schema)`. J'ai ajouté des rappels sur les statuts accentués, les dates ISO, l'absence de montant total dans `commandes` et le calcul des montants à partir de `lignes_commande`. Le chiffre d'affaires net demande de vérifier la définition dans les documents avant de calculer. J'ai également précisé le format JSON et les trois actions possibles.
+
+### Point de contrôle 5
+
+J'ai testé trois questions avec le modèle local, sans mode JSON forcé et sans appeler d'outil. Les trois réponses étaient des JSON valides avec les champs `thought`, `action` et `input`, et les actions attendues dans l'ordre :
+
+1. « Combien de clients ont le segment VIP ? » → `query_database`
+2. « Quelle est la définition du panier moyen ? » → `search_docs`
+3. « Bonjour, que peux-tu faire ? » → `final_answer`
+
+### Questions de réflexion
+
+1. **Pourquoi demander une réponse en JSON plutôt qu’en phrases ? Que devrait faire votre programme avec une réponse comme « Je pense qu’il faudrait regarder dans la base » ?**
+
+   Le JSON donne une structure prévisible que le programme peut analyser pour choisir une action et lui transmettre son entrée. Une phrase libre n'indique pas de façon fiable l'action à exécuter. Le programme doit tenter de valider la réponse et, si elle n'est pas un JSON valide conforme au contrat, ne pas l'exécuter comme une action ; il peut demander une nouvelle réponse au modèle ou afficher une erreur contrôlée.
+
+2. **À quoi sert le champ `thought`, pour le modèle et pour vous ?**
+
+   Il fournit une justification très brève du choix d'action, ce qui aide à rendre la décision explicite et à déboguer le routage. Ce n'est pas une garantie que la décision est correcte et le programme ne doit pas se fier à ce champ pour exécuter une action.
+
+3. **Pourquoi insérer le schéma automatiquement (`{schema}`) plutôt que de le recopier à la main dans le prompt ?**
+
+   L'insertion du schéma évite d'entretenir deux versions manuelles qui pourraient diverger si la base change. Le modèle reçoit ainsi les tables et colonnes réellement disponibles.
+
+4. **Quels pièges de la base avez-vous mis dans les rappels ? Pour chacun, quelle erreur le modèle ferait-il sans ce rappel ?**
+
+   - Les statuts contiennent des accents (`livrée`, `annulée`, `retournée`) : sans rappel, le filtre SQL pourrait ne pas correspondre aux valeurs réelles.
+   - Les dates sont du texte au format ISO : sans rappel, le modèle pourrait utiliser un format ou une fonction de filtrage inadaptés.
+   - `commandes` ne contient pas de montant total : sans rappel, le modèle pourrait demander une colonne inexistante au lieu de calculer les lignes.
+   - Le prix facturé est dans `lignes_commande`, distinct du prix catalogue dans `produits` : sans rappel, le calcul pourrait utiliser le mauvais prix.
+   - Le montant d'une ligne tient compte de la quantité et de la remise ; le chiffre d'affaires net ne compte que les commandes livrées et exclut la livraison : sans rappel, le calcul pourrait ignorer les remises, inclure des commandes non livrées ou les frais d'expédition.
+
+5. **Si vous mettez dans vos exemples la question exacte « Combien de clients VIP avons-nous ? » avec sa réponse, en quoi cela fausse-t-il ensuite l’évaluation de votre agent sur cette même question ?**
+
+   Le modèle pourrait reproduire la réponse mémorisée dans l'exemple au lieu de comprendre la question et d'interroger correctement la base. Le test mesurerait alors sa capacité à répéter l'exemple, et non le bon fonctionnement du routage et du calcul sur une question nouvelle.
+
+6. **Le system prompt est-il une garantie ? Que devra faire le code si le modèle ne le respecte pas ?**
+
+   Non : le prompt est une consigne, pas une garantie. Le code doit valider et parser le JSON, vérifier que les champs et l'action sont autorisés, puis contrôler la requête SQL avant de l'exécuter. En cas de réponse invalide, il doit refuser de lancer l'action et gérer l'erreur proprement, éventuellement en demandant une nouvelle réponse au modèle.

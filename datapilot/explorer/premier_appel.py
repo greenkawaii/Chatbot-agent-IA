@@ -21,7 +21,11 @@ payload = {
     "options": {"temperature": config.LLM_TEMPERATURE},
 }
 debut = time.perf_counter()
-reponse = requests.post(f"{config.OLLAMA_URL}/api/chat", json=payload, timeout=120)
+reponse = requests.post(
+    f"{config.OLLAMA_URL}/api/chat",
+    json=payload,
+    timeout=config.LLM_TIMEOUT,
+)
 duree = time.perf_counter() - debut
 # TODO : afficher le code HTTP, le texte de la réponse, les deux compteurs de tokens et la durée
 code_http = reponse.status_code
