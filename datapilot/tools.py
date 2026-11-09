@@ -1,0 +1,190 @@
+"""tools.py — Les outils de l'agent : SQL (partie 1)."""
+from __future__ import annotations
+
+import re
+import sqlite3
+from pathlib import Path
+
+
+FORBIDDEN = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b",
+    re.IGNORECASE,
+)
+
+
+class SQLValidationError(ValueError):
+    """Requête refusée avant exécution."""
+
+
+def _mask_sql_literals_and_comments(sql: str) -> tuple[str, list[int]]:
+    masked = list(sql)
+    semicolons: list[int] = []
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        next_char = sql[index + 1] if index + 1 < len(sql) else ""
+
+        if char in ("'", '"', "`"):
+            quote = char
+            masked[index] = " "
+            index += 1
+            while index < len(sql):
+                masked[index] = " " if sql[index] not in "\r\n" else sql[index]
+                if sql[index] == quote:
+                    if index + 1 < len(sql) and sql[index + 1] == quote:
+                        masked[index + 1] = " "
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            continue
+
+        if char == "[":
+            masked[index] = " "
+            index += 1
+            while index < len(sql):
+                masked[index] = " " if sql[index] not in "\r\n" else sql[index]
+                if sql[index] == "]":
+                    index += 1
+                    break
+                index += 1
+            continue
+
+        if char == "-" and next_char == "-":
+            while index < len(sql) and sql[index] not in "\r\n":
+                masked[index] = " "
+                index += 1
+            continue
+
+        if char == "/" and next_char == "*":
+            masked[index] = masked[index + 1] = " "
+            index += 2
+            while index < len(sql):
+                if sql[index] == "*" and index + 1 < len(sql) and sql[index + 1] == "/":
+                    masked[index] = masked[index + 1] = " "
+                    index += 2
+                    break
+                masked[index] = " " if sql[index] not in "\r\n" else sql[index]
+                index += 1
+            continue
+
+        if char == ";":
+            semicolons.append(index)
+        index += 1
+
+    return "".join(masked), semicolons
+
+
+def validate_sql(sql: str) -> str:
+    if not isinstance(sql, str):
+        raise SQLValidationError("La requête doit être du texte.")
+
+    cleaned = sql.strip()
+    fenced = re.fullmatch(r"```(?:sql)?\s*(.*?)\s*```", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1).strip()
+
+    if not cleaned:
+        raise SQLValidationError("La requête est vide.")
+
+    masked, semicolons = _mask_sql_literals_and_comments(cleaned)
+    if semicolons:
+        final_semicolon = semicolons[-1]
+        trailing = masked[final_semicolon + 1:]
+        if trailing.strip():
+            raise SQLValidationError("Une seule instruction SQL est autorisée.")
+        if len(semicolons) > 1:
+            raise SQLValidationError("Une seule instruction SQL est autorisée.")
+        cleaned = cleaned[:final_semicolon].rstrip()
+        masked = masked[:final_semicolon].rstrip()
+
+    if not masked.strip():
+        raise SQLValidationError("La requête est vide.")
+    if not re.match(r"^(SELECT|WITH)\b", masked.lstrip(), flags=re.IGNORECASE):
+        raise SQLValidationError("Seules les requêtes SELECT ou WITH sont autorisées.")
+    if FORBIDDEN.search(masked):
+        raise SQLValidationError("La requête contient un mot-clé interdit.")
+
+    return cleaned
+
+
+def _format_cell(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value).replace("|", r"\|").replace("\r", " ").replace("\n", " ")
+
+
+def format_results(
+    columns: list[str],
+    rows: list[tuple],
+    truncated: bool = False,
+) -> str:
+    count = len(rows)
+    if not rows:
+        result = "0 ligne(s) : aucun résultat."
+    else:
+        header = "| " + " | ".join(_format_cell(column) for column in columns) + " |"
+        separator = "| " + " | ".join("---" for _ in columns) + " |"
+        body = [
+            "| " + " | ".join(_format_cell(value) for value in row) + " |"
+            for row in rows
+        ]
+        result = f"{count} ligne(s) :\n" + "\n".join([header, separator, *body])
+    if truncated:
+        result += "\nRésultat tronqué à la limite de lignes."
+    return result
+
+
+class SQLTool:
+    name = "query_database"
+    description = "Exécute UNE requête SQL SELECT (SQLite) sur la base e-commerce."
+
+    def __init__(self, db_path, max_rows: int = 50) -> None:
+        self.db_path = Path(db_path)
+        if not self.db_path.is_file():
+            raise FileNotFoundError(
+                f"Base de données introuvable : {self.db_path}. "
+                "Lancez data/create_db.py pour la créer."
+            )
+        if max_rows < 1:
+            raise ValueError("max_rows doit être supérieur ou égal à 1.")
+        self.max_rows = max_rows
+
+    def _connect(self) -> sqlite3.Connection:
+        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        try:
+            connection.execute("PRAGMA query_only = ON")
+        except sqlite3.Error:
+            connection.close()
+            raise
+        return connection
+
+    def run(self, sql: str, params=()) -> str:
+        try:
+            query = validate_sql(sql)
+        except SQLValidationError as exc:
+            return f"ERREUR : requête refusée — {exc}"
+
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(query, params)
+                columns = [description[0] for description in cursor.description or []]
+                fetched_rows = cursor.fetchmany(self.max_rows + 1)
+        except sqlite3.Error as exc:
+            return f"ERREUR SQL : {exc}. Corrigez la requête et réessayez."
+
+        truncated = len(fetched_rows) > self.max_rows
+        rows = fetched_rows[: self.max_rows]
+        return format_results(columns, rows, truncated=truncated)
+
+    def get_schema(self) -> str:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND sql IS NOT NULL ORDER BY name"
+            ).fetchall()
+        return "\n\n".join(row[0] for row in rows)

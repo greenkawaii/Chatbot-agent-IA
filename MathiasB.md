@@ -211,3 +211,52 @@ J'ai testé trois questions avec le modèle local, sans mode JSON forcé et sans
 6. **Le system prompt est-il une garantie ? Que devra faire le code si le modèle ne le respecte pas ?**
 
    Non : le prompt est une consigne, pas une garantie. Le code doit valider et parser le JSON, vérifier que les champs et l'action sont autorisés, puis contrôler la requête SQL avant de l'exécuter. En cas de réponse invalide, il doit refuser de lancer l'action et gérer l'erreur proprement, éventuellement en demandant une nouvelle réponse au modèle.
+
+## Etape 6 - L'outil SQL sécurisé
+
+### Commentaires / remarques / observations
+
+L'essai avec la saisie `VIP' OR '1'='1` donne **500** avec la f-string : la valeur saisie change la condition SQL et la rend vraie pour tous les clients. Avec le paramètre `?`, le résultat est **0** : la saisie est traitée comme une valeur littérale et non comme du code SQL.
+
+L'outil SQL accepte les requêtes de lecture, ouvre la base en lecture seule et limite le nombre de lignes renvoyées. Pour le test demandé, le regroupement par segment a renvoyé :
+
+| segment | nb |
+|---|---:|
+| Premium | 90 |
+| Standard | 371 |
+| VIP | 39 |
+
+La requête `DELETE FROM clients` a été refusée avant exécution. La requête `SELECT montant FROM commandes` a renvoyé `ERREUR SQL : no such column: montant...` : le message est fourni comme texte au lieu de faire planter l'appelant.
+
+### Point de contrôle 6
+
+- `pytest tests/test_etape06_sql.py -v` : **18 tests passés**.
+- La base est protégée en lecture seule ; une tentative d'écriture via la connexion est refusée par SQLite.
+- Le résultat d'une requête trop longue est limité et annoncé comme tronqué.
+- `get_schema()` renvoie les définitions des cinq tables.
+
+### Questions de réflexion
+
+1. **Laquelle des quatre barrières garderiez-vous si vous ne pouviez en garder qu’une ? Pourquoi les autres restent-elles utiles ?**
+
+   Je garderais l'ouverture SQLite en lecture seule (`mode=ro` et `query_only`), car le moteur de base de données refuse alors les écritures même si une requête dangereuse passe par erreur la validation. Les autres barrières restent utiles : la validation refuse tôt les requêtes interdites avec un message clair, les paramètres liés empêchent les valeurs fournies par l'utilisateur de devenir du SQL, et la limite de lignes évite de charger et d'envoyer un résultat trop volumineux.
+
+2. **Expliquez avec vos mots pourquoi la requête avec la f-string renvoie 500 clients.**
+
+   La f-string insère directement la saisie dans le SQL. La condition devient `segment = 'VIP' OR '1'='1'`. Comme `'1'='1'` est toujours vrai, la requête compte toutes les lignes de `clients`, soit 500. Avec `?`, la saisie complète est comparée comme une seule valeur de segment, qui ne correspond à aucun client.
+
+3. **Pourquoi la fonction `run` ne doit-elle jamais lever d’exception ? Qui lira le message d’erreur, et qu’en fera-t-il ?**
+
+   Le message d'erreur doit pouvoir être renvoyé comme observation à l'agent plutôt que d'interrompre le programme. Le LLM qui reçoit cette observation peut comprendre que sa requête est erronée, la corriger et proposer une nouvelle requête. Une requête refusée ne doit toutefois jamais être exécutée pour obtenir cette correction.
+
+4. **Une liste de mots interdits pourrait refuser une requête légitime. Trouvez un exemple.**
+
+   Une validation naïve par expression régulière pourrait refuser `SELECT 'UPDATE' AS exemple`, car le mot interdit apparaît dans une valeur texte, même si la requête ne modifie rien. Il faut distinguer les mots SQL des mots présents dans les littéraux ou commentaires ; la validation de cet outil ignore ces derniers.
+
+5. **Pourquoi présenter le résultat en tableau Markdown plutôt qu’en `print()` d’une liste de tuples Python ?**
+
+   Le tableau Markdown affiche clairement le nom de chaque colonne et l'association entre une valeur et sa colonne. Il est plus facile à lire pour une personne comme pour le LLM qu'une liste de tuples sans présentation ; les nombres sont aussi arrondis de façon uniforme.
+
+6. **En production, sur une base PostgreSQL, quelle protection supplémentaire mettriez-vous en place côté serveur ?**
+
+   Je créerais un compte PostgreSQL dédié à l'agent, avec uniquement le droit `SELECT` sur les tables nécessaires et aucun droit de modification ou d'administration. Les permissions côté serveur restent ainsi une barrière même si l'application a un défaut. Je limiterais également le temps d'exécution des requêtes.
