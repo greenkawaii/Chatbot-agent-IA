@@ -138,3 +138,34 @@ Ollama quitter:
 ### Pour aller plus loin : jitter
 
 Un jitter ajoute un petit délai aléatoire au temps de backoff. Si beaucoup de clients rencontrent une panne en même temps, cela évite qu’ils retentent tous au même instant et surchargent à nouveau le service. Le délai aléatoire répartit les nouvelles tentatives dans le temps.
+
+
+## Etape 4
+
+La classe `Conversation` conserve séparément le message système et l’historique des échanges. `messages()` remet toujours le message système en premier, puis les derniers messages de la conversation. La fenêtre glissante garde les questions et les réponses récentes, sans dépasser le nombre de tours demandé.
+
+### Point de contrôle 4
+
+- `pytest tests/test_etape04_memoire.py -v` : **1 test passé**.
+- Avec `max_turns=2` et 5 tours enregistrés, `messages()` renvoie bien le message système, puis `Q3`, `R3`, `Q4`, `R4`.
+- Vérification complémentaire : les 4 tests de l’étape 3 passent aussi.
+
+### Questions de réflexion
+
+1. **Pourquoi multiplier `max_turns` par 2 ? Que se passerait-il si la fenêtre commençait par une réponse assistant sans sa question ?**
+
+   Un tour comprend deux messages : une question `user` et une réponse `assistant`. Il faut donc conserver jusqu’à `2 × max_turns` messages. Si l’historique commençait par une réponse sans sa question, le modèle perdrait le contexte de cette réponse et pourrait mal comprendre la suite de la conversation.
+
+2. **Pourquoi le system prompt ne doit-il jamais sortir de la fenêtre ?**
+
+   Le system prompt contient les consignes et le rôle de l’assistant. Il doit être renvoyé à chaque appel pour que le modèle suive ces consignes, même après avoir supprimé les anciens tours de conversation.
+
+3. **Comparez la fenêtre glissante, le budget de tokens et le résumé des anciens échanges. Laquelle choisiriez-vous pour un assistant qui aide à rédiger un rapport de 30 pages, et pourquoi ?**
+
+   La fenêtre glissante est simple et garde les échanges les plus récents, mais elle oublie les informations anciennes. Un budget de tokens limite directement la taille du contexte envoyé au modèle, mais il faut décider quelles informations retirer quand la limite est atteinte. Un résumé conserve les points importants d’échanges anciens sous une forme plus courte, mais il peut omettre ou déformer des détails.
+
+   Pour rédiger un rapport de 30 pages, je choisirais un résumé des décisions et des informations importantes, combiné à un budget de tokens pour respecter la limite du modèle. Je garderais aussi les échanges récents en fenêtre glissante afin que les dernières demandes restent dans leur contexte.
+
+4. **L’estimation « caractères / 4 » est grossière. Dans quel cas risque-t-elle de beaucoup se tromper ?**
+
+   Le nombre de caractères ne correspond pas toujours au nombre de tokens. L’estimation peut être très différente pour des textes dans une langue moins bien représentée par le tokenizer, des mots rares, des suites de chiffres, du code ou des caractères spéciaux. Pour obtenir un compte exact, il faudrait utiliser le tokenizer du modèle concerné.
