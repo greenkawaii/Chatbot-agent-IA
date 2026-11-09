@@ -6,6 +6,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 
 FORBIDDEN = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|PRAGMA|VACUUM|REINDEX)\b",
@@ -296,3 +298,67 @@ def load_corpus(
             )
         )
     return chunks
+
+
+class DocSearchTool:
+    name = "search_docs"
+    description = (
+        "Recherche dans la documentation métier "
+        "(KPI, retours, segmentation, données, livraison, reporting)."
+    )
+
+    def __init__(self, chunks: list[Chunk], embedder, top_k: int = 3) -> None:
+        import faiss
+
+        if not chunks:
+            raise ValueError("Il faut au moins un morceau de documentation.")
+        if top_k < 1:
+            raise ValueError("top_k doit être supérieur ou égal à 1.")
+
+        self.chunks = chunks
+        self.embedder = embedder
+        self.top_k = top_k
+        vectors = self._embed([chunk.text for chunk in chunks])
+        if vectors.ndim != 2 or vectors.shape[0] != len(chunks):
+            raise ValueError("L'embedder doit renvoyer un vecteur par morceau.")
+        self.index = faiss.IndexFlatIP(vectors.shape[1])
+        self.index.add(vectors)
+
+    def _embed(self, texts: list[str]) -> np.ndarray:
+        vectors = self.embedder.encode(
+            texts,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        )
+        return np.asarray(vectors, dtype="float32")
+
+    def search(self, query: str, k: int | None = None) -> list[tuple[float, Chunk]]:
+        requested = self.top_k if k is None else k
+        if requested <= 0:
+            return []
+        count = min(requested, len(self.chunks))
+        query_vector = self._embed([query])
+        if query_vector.ndim != 2 or query_vector.shape[0] != 1:
+            raise ValueError("L'embedder doit renvoyer un vecteur pour la question.")
+        scores, identifiers = self.index.search(query_vector, count)
+        return [
+            (float(score), self.chunks[int(identifier)])
+            for score, identifier in zip(scores[0], identifiers[0])
+            if identifier != -1
+        ]
+
+    def run(self, query: str) -> str:
+        results = self.search(query)
+        if not results:
+            return "Aucun passage pertinent trouvé dans la documentation."
+        return "\n\n".join(
+            f"[Passage {rank} — source : {chunk.source}, "
+            f"section « {chunk.section} », score {score:.2f}]\n{chunk.text}"
+            for rank, (score, chunk) in enumerate(results, start=1)
+        )
+
+
+def load_embedder(model_name: str):
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name)

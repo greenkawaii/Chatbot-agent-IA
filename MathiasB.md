@@ -291,3 +291,53 @@ Les six documents Markdown sont découpés d'abord par leurs titres `##`, puis p
 5. **Nos documents sont bien structurés en sections `##`. Comment découperiez-vous un PDF de 80 pages sans titres ?**
 
    Je commencerais par extraire le texte et repérer des frontières sémantiques possibles, comme les pages, les paragraphes ou les changements de sujet. Ensuite, je créerais des morceaux de taille raisonnable avec un chevauchement, en conservant si possible le numéro de page et les titres détectés pour retrouver la source et garder le contexte.
+
+## Etape 8 - Embeddings, FAISS et recherche documentaire
+
+Le modèle `paraphrase-multilingual-MiniLM-L12-v2` produit des vecteurs de **384 dimensions**. Pour les trois phrases de l'expérience, la matrice de similarité cosinus arrondie à deux décimales est :
+
+| | Question sur le retour | Délai de retour de 30 jours | Frais de livraison |
+|---|---:|---:|---:|
+| Question sur le retour | 1,00 | 0,57 | 0,22 |
+| Délai de retour de 30 jours | 0,57 | 1,00 | 0,16 |
+| Frais de livraison | 0,22 | 0,16 | 1,00 |
+
+La phrase sur le délai de retour est donc la plus proche de la question. Pour « Quel est le délai de retour pour un client VIP ? », le premier passage retrouvé vient de `02_politique_retours.md`, section « Délai de rétractation », avec un score de 0,79. Les deux autres passages traitent aussi des règles VIP ou du remboursement.
+
+### Point de contrôle 8
+
+- `pytest tests/test_etape08_recherche.py -v` : **2 tests passés** avec le faux embedder.
+- Vérification des étapes 6 et 7 : leurs **21 tests** passent également.
+- Avec le vrai embedder et le jeu de huit questions, le hit rate mesuré est :
+
+| Taille des morceaux | Hit rate @1 | Hit rate @3 |
+|---:|---:|---:|
+| 300 | 100 % | 100 % |
+| 500 | 100 % | 100 % |
+| 800 | 100 % | 100 % |
+
+### Questions de réflexion
+
+1. **Pourquoi faut-il vectoriser la question avec le même modèle que les documents ?**
+
+   Le modèle place les textes dans un même espace vectoriel. Si les documents et la question étaient encodés par des modèles différents, leurs vecteurs ne seraient pas comparables de façon fiable : une proximité numérique ne représenterait plus nécessairement une proximité de sens.
+
+2. **Pourquoi normaliser les vecteurs avant de les ranger dans un `IndexFlatIP` ? Que mesurerait l’index sinon ?**
+
+   Avec des vecteurs normalisés, le produit scalaire utilisé par `IndexFlatIP` est égal à la similarité cosinus. Sans normalisation, le produit scalaire dépend aussi de la longueur des vecteurs ; l'index mesurerait alors une combinaison de direction et de norme plutôt que seulement la proximité sémantique voulue.
+
+3. **La recherche renvoie toujours k passages, même pour « Quel est le salaire moyen des employés ? ». Quel risque pour l’agent ? Proposez deux parades.**
+
+   L'agent pourrait prendre des passages sans rapport pour des preuves et inventer une réponse à une question que la documentation ne couvre pas. Deux parades sont d'utiliser un seuil minimal de score pour écarter les passages trop éloignés, et d'indiquer dans le prompt qu'il doit répondre que l'information n'est pas disponible quand les observations ne la documentent pas.
+
+4. **Comparez votre hit rate avec `chunk_size = 300`, `500` et `800`. Que concluez-vous ? Votre jeu de 8 questions suffit-il pour conclure solidement ?**
+
+   Les trois tailles obtiennent ici 100 % en hit rate @1 et @3. Sur ce petit jeu, je ne vois donc pas de différence mesurable entre elles. Huit questions ne suffisent pas pour conclure solidement : il faudrait un jeu plus grand et varié, représentatif des demandes réelles, avec davantage de formulations et de questions difficiles.
+
+5. **Pourquoi le RAG est-il préférable au fine-tuning pour une politique de retours qui change chaque année ? Et préférable à coller toute la documentation dans le prompt ?**
+
+   Avec le RAG, on met à jour les documents indexés sans réentraîner le modèle, ce qui facilite la prise en compte d'une nouvelle politique. Contrairement à l'envoi de toute la documentation à chaque question, la recherche ne transmet que quelques passages pertinents : le prompt est plus court et les éléments fournis sont ciblés.
+
+6. **FAISS ne stocke que des vecteurs. Citez une solution qui stocke aussi les textes et les métadonnées, et dites quand vous la préféreriez.**
+
+   Chroma peut stocker les vecteurs avec les textes et des métadonnées. Je le préférerais pour un corpus persistant ou plus volumineux, quand je veux gérer plus simplement l'ajout, la mise à jour et la récupération des documents et de leurs métadonnées.
