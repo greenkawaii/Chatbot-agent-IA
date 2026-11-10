@@ -3,9 +3,9 @@
 J'ai perdu pas mal de temps au début sur l'initialisation, j'avais commencé sur py 3.14, je m'etais dis que ça n'aurrait aucune incidence sur la suite, mais en voyan scikit-klearn dans le requirement txt j'ai compris qu'il fallait une version stable python, compatible. Donc j'ai du installer une version 3.12.10 supplementaire et refaire les installations
 ### Point de controle 0
 
-python --version ==> 3.12.10
-python -c "import gradio, faiss, sentence_transformers; print('OK')" ==> OK
-python data/create_db.py ==> La base existe déjà.
+python --version ==> 3.12.10 <br>
+python -c "import gradio, faiss, sentence_transformers; print('OK')" ==> OK <br>
+python data/create_db.py ==> La base existe déjà. <br>
 Invoke-RestMethod http://localhost:11434/api/tags ==> {@{name=qwen2.5:7b; model=qwen2.5:7b; ....}}
 
 ### Questions de réflexion
@@ -39,8 +39,8 @@ Invoke-RestMethod http://localhost:11434/api/tags ==> {@{name=qwen2.5:7b; model=
 ### Point de contrôle 1
 
 python -c "import config; print(config.LLM_MODEL, config.DB_PATH.exists(), 
-config.DOCS_DIR.exists(), config.TOP_K)" ==> qwen2.5:7b True True 3
-$env:LLM_MODEL = "qwen2.5:3b"; python -c "import config; print(config.LLM_MODEL)" ==> qwen2.5:3b
+config.DOCS_DIR.exists(), config.TOP_K)" ==> qwen2.5:7b True True 3 <br>
+$env:LLM_MODEL = "qwen2.5:3b"; python -c "import config; print(config.LLM_MODEL)" ==> qwen2.5:3b <br>
 Remove-Item Env:LLM_MODEL ==> "no error"
 
 ### Questions de réflexion
@@ -121,7 +121,9 @@ Ollama quitter:
 
 2. **Avec `max_retries = 3` et `backoff_factor = 1`, combien de secondes de pause au maximum avant l’erreur finale ? Que faut-il ajouter pour connaître le temps d’attente total dans le pire cas ?**
 
-   Sans jitter, le client effectue trois tentatives et attend 1 seconde puis 2 secondes entre elles, soit **3 secondes de backoff**. Le jitter ajouté peut ajouter jusqu’à 1 seconde à chacune des deux pauses : le total des pauses est donc au plus 5 secondes. Pour estimer le temps total dans le pire cas, il faut aussi compter le temps maximal des trois requêtes (par exemple jusqu’à `timeout` chacune) : avec un timeout de 120 secondes, cela peut atteindre environ `3 × 120 + 5 = 365` secondes.
+   Attention : dans l’implémentation actuelle, `max_retries = 3` limite à **trois appels au total** (l’appel initial est inclus), donc il n’y a que deux pauses avant l’erreur finale : 1 et 2 secondes, soit 3 secondes sans jitter. Le jitter peut ajouter jusqu’à 1 seconde par pause : au maximum, les pauses totalisent donc entre **3 à 5 secondes**.
+
+   Pour estimer le temps total dans le pire cas, il faut ajouter le temps maximal des trois appels : avec un `timeout` de 120 secondes, cela donne environ `3 × 120 + 5 = 365` secondes.
 
 3. **Pourquoi le message de l’erreur finale doit-il expliquer quoi faire (« ollama serve ») plutôt que d’afficher seulement l’exception technique ?**
 
@@ -164,7 +166,9 @@ La classe `Conversation` conserve séparément le message système et l’histor
 
    La fenêtre glissante est simple et garde les échanges les plus récents, mais elle oublie les informations anciennes. Un budget de tokens limite directement la taille du contexte envoyé au modèle, mais il faut décider quelles informations retirer quand la limite est atteinte. Un résumé conserve les points importants d’échanges anciens sous une forme plus courte, mais il peut omettre ou déformer des détails.
 
-   Pour rédiger un rapport de 30 pages, je choisirais un résumé des décisions et des informations importantes, combiné à un budget de tokens pour respecter la limite du modèle. Je garderais aussi les échanges récents en fenêtre glissante afin que les dernières demandes restent dans leur contexte.
+   Pour rédiger un rapport de 30 pages, je combinerais les trois approches. Je préparerais d'abord un plan détaillé et le conserverais comme contexte de référence. À chaque échange, j'indiquerais explicitement la partie en cours et les consignes utiles ; le modèle n'aurait ainsi pas à reprendre tout l'historique pour savoir où continuer. Je garderais une fenêtre glissante pour les échanges récents et un résumé mis à jour des décisions, des éléments déjà rédigés et des points restant à traiter. Enfin, un budget de tokens permettrait de vérifier que le plan, le résumé et les échanges utiles tiennent dans la limite du modèle.
+
+   Le plan peut être fourni dans le message système s'il s'agit d'une consigne stable, mais il n'est pas nécessaire d'y mettre l'étape courante : celle-ci peut être transmise dans le message utilisateur avec la demande du moment. Le message système est renvoyé à chaque appel et consomme donc des tokens ; il faut garder ce contexte concis. Pour éviter les oublis ou les répétitions, il est aussi utile de conserver le plan et l'avancement en dehors de la conversation, puis de vérifier le rapport complet à la fin.
 
 4. **L’estimation « caractères / 4 » est grossière. Dans quel cas risque-t-elle de beaucoup se tromper ?**
 
@@ -241,7 +245,7 @@ La requête `DELETE FROM clients` a été refusée avant exécution. La requête
 
 2. **Expliquez avec vos mots pourquoi la requête avec la f-string renvoie 500 clients.**
 
-   La f-string insère directement la saisie dans le SQL. La condition devient `segment = 'VIP' OR '1'='1'`. Comme `'1'='1'` est toujours vrai, la requête compte toutes les lignes de `clients`, soit 500. Avec `?`, la saisie complète est comparée comme une seule valeur de segment, qui ne correspond à aucun client.
+   C'est une astuce de "hacking" classique SQl (injection SQL). La condition devient `segment = 'VIP' OR '1'='1'`. Comme `'1'='1'` est toujours vrai, la requête compte toutes les lignes de `clients`, soit 500. Avec `?`, la saisie complète est comparée comme une seule valeur de segment, qui ne correspond à aucun client.
 
 3. **Pourquoi la fonction `run` ne doit-elle jamais lever d’exception ? Qui lira le message d’erreur, et qu’en fera-t-il ?**
 
@@ -374,3 +378,42 @@ La phrase sur le délai de retour est donc la plus proche de la question. Pour �
 5. **Ce mécanisme ressemble au tool calling natif proposé par les API de LLM. Qu’est-ce que le natif apporterait, et qu’est-ce que notre version « manuelle » vous a permis de comprendre ?**
 
    Le tool calling natif fournit une structure d'appel d'outil directement dans la réponse de l'API, ce qui évite souvent de demander au modèle de fabriquer lui-même du JSON dans du texte. La version manuelle rend visibles les étapes essentielles : lire une décision, valider l'action, appeler uniquement un outil autorisé et renvoyer son résultat au modèle. Dans les deux cas, le code doit garder le contrôle et vérifier les appels avant leur exécution.
+
+## Etape 10 - La boucle de l'agent
+
+La classe `Agent` relie le client LLM, le routeur et les outils. Pour chaque question, elle ajoute celle-ci à la mémoire de conversation, puis crée un brouillon avec le system prompt et l'historique conservé. À chaque étape, le LLM produit une décision JSON que `route_query` interprète. Si un outil est appelé, son résultat est ajouté au brouillon sous la forme `OBSERVATION (<outil>)`, avec la décision brute du modèle juste avant. Une réponse finale conclut la boucle.
+
+Le brouillon est propre à une question : les observations et les décisions intermédiaires ne sont pas ajoutées à la mémoire longue. Seuls la question et la réponse finale y sont conservées. Si le nombre maximal d'étapes est atteint, l'agent demande au LLM une réponse finale lors d'un dernier appel. Si le client LLM lève `LLMError`, l'agent renvoie un message indiquant que le service est indisponible. Le mode console affiche les étapes, accepte `reset` pour vider la mémoire et `quit` pour quitter.
+
+### Point de contrôle 10
+
+- `pytest tests/test_etape10_agent.py -v` : **5 tests passés** avec un faux LLM.
+- Vérification conjointe de `tests/test_etape09_routing.py` et `tests/test_etape10_agent.py` : **13 tests passés**.
+- Les tests couvrent notamment l'appel d'un outil suivi d'une réponse finale, l'ajout de son observation au brouillon, la correction après une réponse mal formée, la demande de réponse finale après la limite d'étapes, la mémoire conversationnelle, la réinitialisation et le message renvoyé quand le LLM est indisponible.
+- Le mode console avec Ollama réel n'a pas encore été vérifié. Les tests avec le faux LLM valident la boucle et ses garde-fous, mais ne prouvent pas que le modèle réel choisira les bons outils ou calculera les bons résultats.
+
+### Questions de réflexion
+
+1. **Pourquoi limiter le nombre d'étapes ? Que se passerait-il sans cette limite si le LLM répétait la même requête erronée ?**
+
+   La limite empêche une boucle infinie et borne le nombre d'appels au LLM et aux outils. Sans elle, si le modèle répétait une requête erronée ou une action qui ne résout pas le problème, l'agent pourrait continuer indéfiniment, perdre du temps et consommer des ressources. Ici, après la limite, l'agent demande une réponse finale ; si elle n'est toujours pas exploitable comme réponse finale, il renvoie un message d'excuse.
+
+2. **Expliquez la différence entre la mémoire longue et le brouillon. Que se passerait-il si toutes les observations restaient en mémoire ?**
+
+   La mémoire longue conserve les questions de l'utilisateur et les réponses finales entre les tours. Le brouillon ne sert qu'à traiter la question courante : il contient les décisions du LLM et les observations des outils, puis est abandonné. Si toutes les observations restaient dans l'historique, celui-ci grossirait rapidement, pourrait dépasser la fenêtre de contexte et mélanger les résultats d'anciennes questions avec la demande actuelle.
+
+3. **Le message d'observation est envoyé avec le rôle `user`. Pourquoi pas `assistant` ? Pourquoi pas `system` ?**
+
+   Dans le format de conversation utilisé ici, le rôle `user` sert à transmettre au modèle les informations reçues de l'extérieur, notamment le résultat d'un outil. Le rôle `assistant` est réservé aux messages produits par le modèle, par exemple sa décision JSON précédente. Le rôle `system` porte les consignes stables et privilégiées de l'agent ; une observation ponctuelle ne doit pas être présentée comme une consigne système.
+
+4. **Pour « panier moyen 2025 selon la définition officielle », votre agent a-t-il consulté la documentation avant d'écrire le SQL ? Sinon, que changeriez-vous dans votre prompt ?**
+
+   Ce point doit être vérifié avec une exécution réelle et en lisant la trace des étapes ou `logs/llm_exchanges.jsonl` : les tests avec un faux LLM ne permettent pas de savoir quelle séquence le modèle réel choisira. Le system prompt demande déjà d'appeler `search_docs` en cas de doute sur la définition d'un indicateur et donne un exemple où la documentation est consultée avant le SQL. Si la trace montre que le modèle passe directement à la requête, je renforcerais cette consigne en exigeant explicitement une recherche documentaire pour le panier moyen et en précisant de ne calculer qu'après avoir reçu la définition.
+
+5. **Pour « Et combien d'entre eux sont VIP ? », qu'est-ce qui permet à l'agent de comprendre « eux » ? Vérifiez la réponse avec votre propre requête SQL.**
+
+   « Eux » renvoie aux clients actifs mentionnés dans la question précédente. L'agent peut faire ce lien parce que la mémoire longue conserve les derniers échanges et que `Conversation.messages()` les renvoie au LLM avec la nouvelle question. Le résultat attendu indiqué dans le sujet est de 445 clients actifs au 31 décembre 2025 ; le nombre de VIP parmi eux doit être vérifié sur la base, par une requête SQL qui reprend la même définition d'« actif » et filtre ce sous-ensemble sur le segment VIP. Je ne reporte pas de nombre pour ce second calcul sans l'avoir exécuté.
+
+6. **Les tests de l'étape passent avec un faux LLM. Que prouvent-ils, et que ne prouvent-ils pas ?**
+
+   Ils prouvent que, pour les réponses pré-écrites du faux LLM, l'agent enchaîne correctement les étapes, transmet les observations, conserve uniquement les échanges finaux en mémoire, respecte la limite d'étapes et gère une `LLMError`. Ils ne prouvent ni que le vrai modèle répondra toujours en JSON valide, ni qu'il choisira le bon outil, formulera un SQL correct ou donnera un résultat métier exact. Ces points nécessitent des essais avec Ollama et une vérification indépendante des résultats, notamment par SQL.

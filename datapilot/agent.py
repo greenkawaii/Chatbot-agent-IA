@@ -71,6 +71,12 @@ class RouteResult:
     thought: str = ""
 
 
+@dataclass
+class AgentResponse:
+    answer: str
+    steps: list[RouteResult] = field(default_factory=list)
+
+
 def route_query(llm_output: str, tools: dict) -> RouteResult:
     try:
         decision = parse_llm_output(llm_output)
@@ -113,3 +119,148 @@ def route_query(llm_output: str, tools: dict) -> RouteResult:
         tool_input=decision.input,
         thought=decision.thought,
     )
+
+
+class Agent:
+    def __init__(
+        self,
+        llm,
+        tools: dict,
+        system_prompt: str,
+        max_steps: int = 5,
+        max_history_turns: int = 6,
+    ) -> None:
+        self.llm = llm
+        self.tools = tools
+        self.max_steps = max_steps
+        self.conversation = Conversation(
+            system_prompt,
+            max_turns=max_history_turns,
+        )
+
+    def ask(self, question: str) -> AgentResponse:
+        self.conversation.add_user(question)
+        scratchpad = self.conversation.messages()
+        steps: list[RouteResult] = []
+        answer = None
+
+        try:
+            for _ in range(self.max_steps):
+                llm_output = self.llm.chat(scratchpad, json_mode=True)
+                result = route_query(llm_output, self.tools)
+                steps.append(result)
+                if result.kind == "final":
+                    answer = result.content
+                    break
+
+                scratchpad.append({"role": "assistant", "content": llm_output})
+                if result.kind == "error":
+                    observation = f"ERREUR DE FORMAT :\n{result.content}"
+                else:
+                    observation = (
+                        f"OBSERVATION ({result.tool}) :\n{result.content}"
+                    )
+                scratchpad.append({"role": "user", "content": observation})
+
+            if answer is None:
+                scratchpad.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "La limite d'étapes est atteinte. Donnez maintenant "
+                            "une réponse finale avec l'action final_answer, sans "
+                            "appeler d'autre outil."
+                        ),
+                    }
+                )
+                llm_output = self.llm.chat(scratchpad, json_mode=True)
+                result = route_query(llm_output, self.tools)
+                steps.append(result)
+                if result.kind == "final":
+                    answer = result.content
+                else:
+                    answer = (
+                        "Désolé, je n'ai pas pu produire une réponse finale "
+                        "dans le nombre d'étapes autorisé."
+                    )
+        except LLMError as exc:
+            logger.warning("Le service LLM est indisponible : %s", exc)
+            answer = f"Le service LLM est indisponible. {exc}"
+
+        self.conversation.add_assistant(answer)
+        return AgentResponse(answer=answer, steps=steps)
+
+    def reset(self) -> None:
+        self.conversation.reset()
+
+
+def build_agent():
+    import config
+    from llm_client import LLMClient
+    from prompts import build_system_prompt
+    from tools import DocSearchTool, SQLTool, load_corpus, load_embedder
+
+    llm = LLMClient(
+        model=config.LLM_MODEL,
+        base_url=config.OLLAMA_URL,
+        temperature=config.LLM_TEMPERATURE,
+        timeout=config.LLM_TIMEOUT,
+        num_ctx=config.LLM_NUM_CTX,
+        log_file=config.LOG_DIR / "llm_exchanges.jsonl",
+    )
+    sql_tool = SQLTool(config.DB_PATH, max_rows=config.SQL_MAX_ROWS)
+    chunks = load_corpus(
+        config.DOCS_DIR,
+        chunk_size=config.CHUNK_SIZE,
+        overlap=config.CHUNK_OVERLAP,
+    )
+    doc_tool = DocSearchTool(
+        chunks,
+        load_embedder(config.EMBEDDING_MODEL),
+        top_k=config.TOP_K,
+    )
+    tools = {
+        sql_tool.name: sql_tool,
+        doc_tool.name: doc_tool,
+    }
+    system_prompt = build_system_prompt(sql_tool.get_schema())
+    agent = Agent(
+        llm,
+        tools,
+        system_prompt,
+        max_steps=config.MAX_STEPS,
+        max_history_turns=config.MAX_HISTORY_TURNS,
+    )
+    return agent, llm
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    agent, _llm = build_agent()
+    print("DataPilot prêt. Tapez « quit » pour quitter ou « reset » pour vider la mémoire.")
+    while True:
+        try:
+            question = input("\nVous : ").strip()
+        except EOFError:
+            break
+        if question.lower() in {"quit", "exit"}:
+            break
+        if question.lower() == "reset":
+            agent.reset()
+            print("Mémoire vidée.")
+            continue
+        if not question:
+            continue
+
+        response = agent.ask(question)
+        for index, step in enumerate(response.steps, start=1):
+            step_input = (
+                step.tool_input if step.tool_input is not None else step.content
+            )
+            tool_input = str(step_input).replace("\n", " ")
+            print(
+                f"Étape {index} — {step.kind}"
+                f"{f' ({step.tool})' if step.tool else ''}: "
+                f"{tool_input[:120]}"
+            )
+        print(f"DataPilot : {response.answer}")
