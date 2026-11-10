@@ -417,3 +417,54 @@ Le brouillon est propre à une question : les observations et les décisions int
 6. **Les tests de l'étape passent avec un faux LLM. Que prouvent-ils, et que ne prouvent-ils pas ?**
 
    Ils prouvent que, pour les réponses pré-écrites du faux LLM, l'agent enchaîne correctement les étapes, transmet les observations, conserve uniquement les échanges finaux en mémoire, respecte la limite d'étapes et gère une `LLMError`. Ils ne prouvent ni que le vrai modèle répondra toujours en JSON valide, ni qu'il choisira le bon outil, formulera un SQL correct ou donnera un résultat métier exact. Ces points nécessitent des essais avec Ollama et une vérification indépendante des résultats, notamment par SQL.
+
+## Etape 11 - Faire le point : tests et journaux
+
+### Point de contrôle 11
+
+- La commande de tests des étapes 3, 4 et 6 à 10 a donné **41 tests passés** en 4,16 secondes.
+- Le journal contient **15 appels** : l'appel de test « Réponds juste OK. » et **14 appels de l'agent réel** pour les six questions de l'étape 10.
+- Sur les 14 appels de l'agent, la durée moyenne est de **2,48 s** et le nombre moyen de tokens est de **2 206 en entrée** et **75 en sortie**. La première question a nécessité deux appels en 21,82 s ; les demandes à trois étapes ont pris 3,55 s pour le chiffre d'affaires et 3,45 s pour le panier moyen. Ces temps ne sont qu'une mesure de cette session : un appel initial a duré 21,39 s, ce qui augmente la moyenne.
+- Les réponses observées sont correctes pour le nombre de clients VIP (**39**), le chiffre d'affaires net 2025 (**166 091,86 €**) et le délai de retour VIP (**60 jours**). Deux résultats sont erronés : l'agent donne **61,84 €** au lieu de **115,99 €** pour le panier moyen et **461** au lieu de **445** pour les clients actifs.
+- Analyse de l'erreur sur le panier moyen : la requête divise la somme des lignes par `COUNT(c.commande_id)` après une jointure avec `lignes_commande`. Une commande ayant plusieurs lignes est comptée plusieurs fois. Il faut compter les commandes distinctes (`COUNT(DISTINCT c.commande_id)`).
+- Analyse de l'erreur sur les clients actifs : la requête compte les clients ayant passé n'importe quelle commande en 2025. Elle ne filtre ni les commandes livrées ni la fenêtre des 365 jours précédant le 31 décembre 2025. Avec la définition du glossaire, la requête de référence donne **445**.
+- Pour la question de suivi sur les VIP parmi ces clients actifs, la réponse (**39**) correspond au décompte vérifié, mais la requête du LLM compte les clients VIP inscrits avant la date de référence, au lieu de joindre le sous-ensemble des clients actifs. Le résultat est donc juste par coïncidence, pas grâce à une requête qui exprime correctement la demande.
+
+Pour refaire les vérifications et afficher les statistiques depuis le dossier `datapilot` :
+
+```powershell
+pytest tests/test_etape03_client.py tests/test_etape04_memoire.py tests/test_etape06_sql.py tests/test_etape07_chunking.py tests/test_etape08_recherche.py tests/test_etape09_routing.py tests/test_etape10_agent.py -q
+python
+```
+
+Puis, dans l'interpréteur Python :
+
+```python
+import pandas as pd
+logs = pd.read_json("logs/llm_exchanges.jsonl", lines=True)
+agent_logs = logs[logs["messages"].apply(
+    lambda messages: any(message.get("role") == "system" for message in messages)
+)]
+print(agent_logs[["duration_s", "prompt_tokens", "completion_tokens"]].describe())
+print(agent_logs.iloc[-1]["answer"])
+```
+
+L'agent a maintenant été lancé avec Ollama et ses appels sont dans `logs/llm_exchanges.jsonl`. Pour reproduire le calcul des statistiques, depuis le dossier `datapilot`, lancer `python` puis exécuter le code pandas ci-dessus. Pour analyser une erreur, comparer la réponse finale et le SQL du LLM avec la définition métier et une requête de référence. Les tests automatisés n'appellent pas le vrai LLM et ne remplissent donc pas ce journal.
+
+### Questions de réflexion
+
+1. **Pourquoi un test qui utiliserait le vrai LLM serait-il « instable » ?**
+
+   Le vrai LLM peut produire des réponses différentes à une même demande, et son comportement dépend du modèle, de ses paramètres, du contexte transmis et de la disponibilité du service. Le résultat d'un test peut donc varier ou échouer pour une raison extérieure à la mécanique testée. Un faux LLM renvoie au contraire des réponses prédéfinies, ce qui rend les tests rapides et reproductibles.
+
+2. **Le nombre de tokens lus (`prompt_tokens`) augmente au fil des étapes d'une même question. Pourquoi ?**
+
+   À chaque nouvel appel, l'agent renvoie au LLM le brouillon de la question en cours : les messages précédents du modèle et les observations des outils s'y ajoutent au fur et à mesure. Le prompt contient donc généralement davantage de texte à traiter à chaque étape, ce qui augmente le nombre de tokens d'entrée.
+
+3. **Quelle est la durée moyenne d'un appel sur votre poste ? Combien de temps l'utilisateur attendra-t-il pour une question qui nécessite trois étapes ? Quelle conséquence pour l'interface ?**
+
+   La durée moyenne mesurée est de **2,48 s**. Cette moyenne est fortement influencée par un appel de 21,39 s ; elle dépend du poste et de l'état du modèle, et mérite d'être mesurée sur d'autres sessions. Dans cette exécution, les questions qui ont nécessité trois appels ont pris 3,55 s et 3,45 s au total. L'attente correspond à la somme des appels LLM et du temps passé dans les outils. L'interface devra signaler que le traitement est en cours, rester réactive et afficher éventuellement la progression entre les étapes.
+
+4. **Un test unitaire vert garantit-il que l'agent donnera le bon chiffre d'affaires ? Justifiez.**
+
+   Non. Les tests unitaires vérifient le comportement mécanique du code avec des entrées contrôlées : parsing, routage, exécution des outils, mémoire et gestion des erreurs. Ils ne garantissent pas que le vrai LLM choisira la bonne démarche ni que sa requête correspondra à la définition métier. Il faut également vérifier la réponse de l'agent sur des scénarios réels et comparer le résultat à une requête SQL de référence.
