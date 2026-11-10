@@ -468,3 +468,45 @@ L'agent a maintenant été lancé avec Ollama et ses appels sont dans `logs/llm_
 4. **Un test unitaire vert garantit-il que l'agent donnera le bon chiffre d'affaires ? Justifiez.**
 
    Non. Les tests unitaires vérifient le comportement mécanique du code avec des entrées contrôlées : parsing, routage, exécution des outils, mémoire et gestion des erreurs. Ils ne garantissent pas que le vrai LLM choisira la bonne démarche ni que sa requête correspondra à la définition métier. Il faut également vérifier la réponse de l'agent sur des scénarios réels et comparer le résultat à une requête SQL de référence.
+
+## Etape 12 - L'interface web avec Gradio
+
+`ui.py` fournit une interface Gradio qui ne dépend que de l'interface publique de l'agent : `ask(question)` et `reset()`. `message_text` convertit les contenus de messages Gradio en texte, y compris les contenus sous forme de liste de morceaux. `steps_to_messages` ajoute les appels d'outils et les erreurs sous forme de blocs repliables dans le fil de discussion ; la réponse finale est affichée comme un message normal.
+
+La soumission est séparée en deux événements : le premier affiche immédiatement la question et vide le champ de saisie ; le second appelle l'agent et affiche l'indicateur de progression pendant le traitement. Le bouton de réinitialisation vide à la fois l'historique de l'interface et la mémoire de l'agent. Le lancement passe le thème à `launch(theme=...)`, conformément à Gradio 6.
+
+### Point de contrôle 12
+
+- `pytest tests/test_etape12_interface.py -v` : **3 tests passés**.
+- La suite complète `pytest -q` : **44 tests passés**.
+- La construction de l'interface et le format des messages ont été vérifiés avec un faux agent. Le lancement visuel dans un navigateur avec l'agent réel reste à effectuer.
+
+Pour voir l'interface réelle, depuis le dossier `datapilot`, lancer :
+
+```powershell
+python ui.py
+```
+
+Si Ollama n'est pas déjà lancé, démarrer `ollama serve` dans un autre terminal. Ouvrir ensuite `http://127.0.0.1:7860`, essayer une question et vérifier que la question apparaît immédiatement, qu'un indicateur s'affiche pendant le calcul, que les étapes d'outil se replient et que « Réinitialiser » efface la conversation. Cette vérification manuelle sollicite le vrai agent et peut ajouter des appels à `logs/llm_exchanges.jsonl`.
+
+### Questions de réflexion
+
+1. **Pourquoi deux événements enchaînés plutôt qu'une seule fonction qui affiche la question et calcule la réponse ?**
+
+   Le premier événement est rapide : il affiche la question immédiatement et vide la zone de saisie. Le second fait le travail potentiellement long (appels LLM et outils) et permet à Gradio d'afficher son indicateur de progression. Si tout était effectué dans une seule fonction, l'utilisateur pourrait attendre sans voir sa question apparaître ni comprendre que le traitement est en cours.
+
+2. **`create_ui` accepte « n'importe quel objet qui a `ask` et `reset` ». Quels fichiers faudrait-il modifier pour remplacer Gradio par une autre interface (Streamlit, une application mobile) ? Pour remplacer Ollama par une API en ligne ?**
+
+   Pour remplacer Gradio, on peut remplacer la couche de présentation dans `ui.py`, en conservant l'interface `ask`/`reset` de l'agent. Pour remplacer Ollama par une API en ligne, il faudrait adapter ou remplacer `LLMClient` dans `llm_client.py` et ajuster la configuration ainsi que la construction de l'agent dans `agent.py` si les paramètres ou le format de l'API diffèrent. Le routeur et les outils n'auraient pas à changer si le nouveau client conserve le même contrat `chat`.
+
+3. **Pourquoi montrer la requête SQL à un utilisateur métier qui ne connaît pas le SQL ?**
+
+   La requête rend l'action de l'agent plus transparente et peut aider une personne technique à auditer un résultat ou à repérer une erreur. Mais elle peut être difficile à comprendre pour un utilisateur métier et peut révéler des détails internes. En production, on pourrait afficher une explication en langage naturel par défaut et réserver la requête complète à un panneau de détails ou aux personnes autorisées.
+
+4. **Ouvrez l'interface dans deux onglets et posez des questions différentes. Que constatez-vous sur la mémoire ? Pourquoi serait-ce un problème en production ?**
+
+   `create_ui` reçoit une instance unique de l'agent, partagée par les sessions de cette application. La mémoire longue de cet agent est donc partagée : une question posée dans un onglet peut apparaître comme contexte à une question posée dans l'autre, même si les historiques visuels des onglets sont distincts. En production, cela peut mélanger les conversations, produire des réponses incorrectes et exposer des informations d'une session à une autre. Il faudrait isoler l'agent ou sa mémoire par session utilisateur.
+
+5. **Que se passe-t-il dans l'interface si vous arrêtez Ollama ? Le comportement est-il acceptable pour un utilisateur ?**
+
+   L'appel finit par échouer après les tentatives et délais de reprise du client. `Agent.ask` intercepte alors `LLMError` et renvoie un message indiquant que le service LLM est indisponible ; l'interface peut afficher ce message dans le fil au lieu de planter. Le message est utile, mais l'attente due aux nouvelles tentatives peut être longue. Une interface de production devrait aussi expliquer l'indisponibilité clairement et limiter ou signaler cette attente.
